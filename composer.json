@@ -1,0 +1,39 @@
+{
+  "name": "hnzio/kirby-share-embed",
+  "description": "Kirby plugin for cached social and web link embeds with local asset storage.",
+  "type": "kirby-plugin",
+  "license": "MIT",
+  "homepage": "https://github.com/hnzio/kirby-share-embed",
+  "support": {
+    "docs": "https://github.com/hnzio/kirby-share-embed/blob/main/README.md",
+    "source": "https://github.com/hnzio/kirby-share-embed"
+  },
+  "authors": [
+    {
+      "name": "hnzio"
+    }
+  ],
+  "keywords": [
+    "kirby",
+    "kirby-cms",
+    "kirby-plugin",
+    "embed",
+    "oembed",
+    "bluesky",
+    "mastodon",
+    "youtube"
+  ],
+  "require": {
+    "php": ">=8.1",
+    "getkirby/composer-installer": "^1.2"
+  },
+  "require-dev": {
+    "getkirby/cms": "^5.0"
+  },
+  "config": {
+    "optimize-autoloader": true,
+    "allow-plugins": {
+      "getkirby/composer-installer": true
+    }
+  }
+}
