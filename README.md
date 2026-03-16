@@ -69,7 +69,7 @@ Mit Overrides:
 ## Hinweise
 
 - Der Standardpfad fuer gecachte Assets ist in der Sample-Datei `assets/share-embed`.
-- In dieser lokalen Installation bleibt der bestehende Pfad `assets/embeded` per ignorierter `config.php` erhalten.
+- In dieser Installation bleibt der bestehende Pfad `assets/embeded` per ignorierter `config.php` erhalten.
 - Fuer YouTube-Metadaten mit API-Unterstuetzung kann `youtube.apiKey` gesetzt werden.
 
 ## Lizenz
