@@ -47,7 +47,7 @@ if (function_exists('hnzioShareEmbedOption') === false) {
 
 final class HnzioShareEmbedService
 {
-    private const SCHEMA_VERSION = 26;
+    private const SCHEMA_VERSION = 32;
 
     public function __construct(
         private Kirby\Cms\App $kirby
@@ -101,6 +101,15 @@ final class HnzioShareEmbedService
                 }
                 if (empty($meta['audioPodcastTitle']) && !empty($podcastMeta['title'])) {
                     $meta['audioPodcastTitle'] = (string)$podcastMeta['title'];
+                }
+                if (empty($meta['audioPodcastWebsiteUrl']) && !empty($podcastMeta['audioPodcastWebsiteUrl'])) {
+                    $meta['audioPodcastWebsiteUrl'] = (string)$podcastMeta['audioPodcastWebsiteUrl'];
+                }
+                if (empty($meta['audioFeedUrl']) && !empty($podcastMeta['audioFeedUrl'])) {
+                    $meta['audioFeedUrl'] = (string)$podcastMeta['audioFeedUrl'];
+                }
+                if (empty($meta['audioFeedFormat']) && !empty($podcastMeta['audioFeedFormat'])) {
+                    $meta['audioFeedFormat'] = (string)$podcastMeta['audioFeedFormat'];
                 }
                 if (!empty($podcastMeta['image'])) {
                     $meta['favicon'] = (string)$podcastMeta['image'];
@@ -184,6 +193,9 @@ final class HnzioShareEmbedService
             'audioPodcastTitle' => $this->cleanText((string)($meta['audioPodcastTitle'] ?? '')),
             'audioEpisodeNumber' => $this->cleanText((string)($meta['audioEpisodeNumber'] ?? '')),
             'audioPodcastUrl' => $this->safeUrl((string)$pocketPodcastUrl),
+            'audioPodcastWebsiteUrl' => $this->safeUrl((string)($meta['audioPodcastWebsiteUrl'] ?? '')),
+            'audioFeedUrl' => $this->safeUrl((string)($meta['audioFeedUrl'] ?? '')),
+            'audioFeedFormat' => strtolower($this->cleanText((string)($meta['audioFeedFormat'] ?? ''))),
             'audioDuration' => $this->cleanText((string)($meta['audioDuration'] ?? '')),
             'videoDuration' => $this->cleanText((string)($meta['videoDuration'] ?? $meta['audioDuration'] ?? '')),
             'imageRemoteUrl' => $this->safeUrl((string)($options['image'] ?? $meta['image'] ?? '')),
@@ -590,6 +602,10 @@ final class HnzioShareEmbedService
                     Html::span($headerTitle, ['class' => 'share-embed__podcast-title']),
                     $episodeNumber !== '' ? Html::span($episodeNumber, ['class' => 'share-embed__podcast-episode']) : '',
                 ], ['class' => 'share-embed__podcast-headtext']);
+                $subscribeButtonHtml = $this->renderPodloveSubscribeButton($data);
+                if ($subscribeButtonHtml !== '') {
+                    $headMeta[] = $subscribeButtonHtml;
+                }
             } elseif (is_string($faviconLocal) && $faviconLocal !== '') {
                 $headMeta[] = Html::img($faviconLocal, [
                     'class' => 'share-embed__favicon',
@@ -1011,6 +1027,22 @@ final class HnzioShareEmbedService
             $pocketFromUrl = $this->pocketCastsPartsFromUrl($url);
         }
 
+        $pocketPodcastUrl = $this->pocketCastsPodcastPageUrl($canonicalResolved)
+            ?? $this->pocketCastsPodcastPageUrl($url);
+        if (
+            $pocketPodcastUrl !== null &&
+            (
+                trim((string)($pocketData['podcastTitle'] ?? '')) === '' ||
+                trim((string)($pocketData['podcastWebsiteUrl'] ?? '')) === '' ||
+                trim((string)($pocketData['podcastFeedUrl'] ?? '')) === ''
+            )
+        ) {
+            $podcastPageData = $this->fetchPocketCastsStructuredData($pocketPodcastUrl);
+            if ($podcastPageData !== []) {
+                $pocketData = array_merge($podcastPageData, $pocketData);
+            }
+        }
+
         $podcastTitle = $this->firstFilled([
             $this->xpathText($xpath, '//*[contains(@class, "podcast-title")]'),
             $this->xpathText($xpath, '//*[contains(@class, "podcast_title")]'),
@@ -1087,6 +1119,52 @@ final class HnzioShareEmbedService
             $normalizedVideoDuration = $normalizedAudioDuration;
         }
 
+        $podcastWebsiteUrl = $this->safeUrl((string)($pocketData['podcastWebsiteUrl'] ?? ''));
+        $audioFeedUrl = $this->safeUrl((string)($pocketData['podcastFeedUrl'] ?? ''));
+
+        $heisePodcastWebsiteUrl = $this->inferHeisePodcastWebsiteUrl((string)($podcastWebsiteUrl ?? ''), $podcastTitle);
+        if (
+            $heisePodcastWebsiteUrl !== null &&
+            (
+                $this->isWeakHeisePodcastWebsiteUrl((string)($podcastWebsiteUrl ?? '')) ||
+                $audioFeedUrl === null ||
+                $this->isWeakHeisePodcastFeedUrl((string)($audioFeedUrl ?? ''))
+            )
+        ) {
+            $heisePodcastFeedUrl = $this->discoverPodcastFeedUrl($heisePodcastWebsiteUrl);
+            if ($heisePodcastFeedUrl !== null) {
+                $podcastWebsiteUrl = $heisePodcastWebsiteUrl;
+                $audioFeedUrl = $heisePodcastFeedUrl;
+            } elseif ($podcastWebsiteUrl === null || $this->isWeakHeisePodcastWebsiteUrl((string)($podcastWebsiteUrl ?? ''))) {
+                $podcastWebsiteUrl = $heisePodcastWebsiteUrl;
+            }
+        }
+
+        if ($audioFeedUrl === null && $podcastWebsiteUrl !== null) {
+            $audioFeedUrl = $this->discoverPodcastFeedUrl($podcastWebsiteUrl);
+        }
+        if ($audioFeedUrl === null) {
+            $audioFeedUrl = $this->inferPocketCastsFeedUrlFromEpisodeAudio(
+                (string)($pocketData['episodeAudioUrl'] ?? ''),
+                $podcastTitle
+            );
+        }
+        if ($audioFeedUrl === null) {
+            $audioFeedUrl = $this->inferPocketCastsFeedUrlFromKnownShow(
+                $podcastTitle,
+                (string)($podcastWebsiteUrl ?? ''),
+                $canonicalResolved ?? $url
+            );
+        }
+
+        $audioEnclosureUrl = $this->safeUrl((string)($pocketData['episodeAudioUrl'] ?? ''));
+        $audioEnclosureMimeType = $this->cleanText((string)($pocketData['episodeAudioMimeType'] ?? ''));
+        $audioFeedFormat = $this->inferPodcastFeedFormat(
+            $audioEnclosureMimeType,
+            (string)($audioEnclosureUrl ?? ''),
+            (string)($audioFeedUrl ?? '')
+        );
+
         return [
             'title' => $title,
             'description' => $description,
@@ -1094,6 +1172,9 @@ final class HnzioShareEmbedService
             'image' => $this->absoluteUrl($image, $url),
             'audioPodcastTitle' => $podcastTitle,
             'audioEpisodeNumber' => $audioEpisodeNumber,
+            'audioPodcastWebsiteUrl' => $podcastWebsiteUrl,
+            'audioFeedUrl' => $audioFeedUrl,
+            'audioFeedFormat' => $audioFeedFormat,
             'audioDuration' => $normalizedAudioDuration,
             'videoDuration' => $normalizedVideoDuration,
             'imageLicenseText' => $licenseText,
@@ -1103,6 +1184,145 @@ final class HnzioShareEmbedService
             'authorName' => $authorName,
             'publishedTime' => $published,
         ];
+    }
+
+    private function inferHeisePodcastWebsiteUrl(string $currentWebsiteUrl, string $podcastTitle): ?string
+    {
+        $title = html_entity_decode(trim($podcastTitle), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        if ($title === '') {
+            return null;
+        }
+
+        $currentUrl = $this->safeUrl($currentWebsiteUrl);
+        if ($currentUrl !== null) {
+            $host = strtolower((string)(parse_url($currentUrl, PHP_URL_HOST) ?? ''));
+            if ($host !== '' && $host !== 'www.heise.de' && $host !== 'heise.de') {
+                return null;
+            }
+        }
+
+        $baseTitle = trim((string)(preg_split('/\s+[–-]\s+/u', $title, 2)[0] ?? $title));
+        if ($baseTitle === '') {
+            return null;
+        }
+
+        $slug = preg_replace('~[^\pL\pN]+~u', '-', $baseTitle);
+        $slug = trim((string)$slug, '-');
+        if ($slug === '') {
+            return null;
+        }
+
+        return 'https://www.heise.de/thema/' . rawurlencode($slug);
+    }
+
+    private function isWeakHeisePodcastWebsiteUrl(string $url): bool
+    {
+        $safeUrl = $this->safeUrl($url);
+        if ($safeUrl === null) {
+            return true;
+        }
+
+        $host = strtolower((string)(parse_url($safeUrl, PHP_URL_HOST) ?? ''));
+        if ($host !== 'www.heise.de' && $host !== 'heise.de') {
+            return false;
+        }
+
+        $path = strtolower((string)(parse_url($safeUrl, PHP_URL_PATH) ?? ''));
+        if ($path === '' || $path === '/') {
+            return true;
+        }
+
+        return preg_match('~^/(ct/impressum|newsletter/anmeldung\.html)(?:/|$)~i', $path) === 1;
+    }
+
+    private function isWeakHeisePodcastFeedUrl(string $url): bool
+    {
+        $safeUrl = $this->safeUrl($url);
+        if ($safeUrl === null) {
+            return true;
+        }
+
+        $host = strtolower((string)(parse_url($safeUrl, PHP_URL_HOST) ?? ''));
+        if ($host !== 'www.heise.de' && $host !== 'heise.de') {
+            return false;
+        }
+
+        $path = strtolower((string)(parse_url($safeUrl, PHP_URL_PATH) ?? ''));
+        return $path === '/ct/feed.xml';
+    }
+
+    private function renderPodloveSubscribeButton(array $data): string
+    {
+        $podcastTitle = $this->cleanText((string)($data['audioPodcastTitle'] ?? ''));
+        if ($podcastTitle === '') {
+            return '';
+        }
+
+        $feedUrl = $this->safeUrl((string)($data['audioFeedUrl'] ?? ''));
+        if ($feedUrl === null) {
+            $feedUrl = $this->inferPocketCastsFeedUrlFromKnownShow(
+                $podcastTitle,
+                (string)($data['audioPodcastWebsiteUrl'] ?? ''),
+                (string)($data['canonicalUrl'] ?? $data['audioPodcastUrl'] ?? $data['sourceUrl'] ?? '')
+            );
+        }
+        if ($feedUrl === null) {
+            return '';
+        }
+
+        $feedFormat = $this->cleanText((string)($data['audioFeedFormat'] ?? ''));
+        if ($feedFormat === '') {
+            $feedFormat = 'mp3';
+        }
+
+        $coverUrl = $this->safeUrl((string)($data['faviconLocalUrl'] ?? ''))
+            ?? $this->safeUrl((string)($data['imageLocalUrl'] ?? ''))
+            ?? $this->safeUrl((string)($data['faviconRemoteUrl'] ?? ''))
+            ?? $this->safeUrl((string)($data['imageRemoteUrl'] ?? ''));
+        $description = $this->cleanText((string)($data['description'] ?? ''));
+        $hash = substr(sha1($feedUrl . '|' . $podcastTitle), 0, 12);
+        $variable = 'hnzPodloveData' . $hash;
+
+        $podcastData = [
+            'title' => $podcastTitle,
+            'subtitle' => '',
+            'description' => $description,
+            'cover' => $coverUrl ?? '',
+            'feeds' => [[
+                'type' => 'audio',
+                'format' => $feedFormat,
+                'url' => $feedUrl,
+            ]],
+        ];
+
+        $json = json_encode(
+            $podcastData,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+        );
+        if (!is_string($json) || $json === '') {
+            return '';
+        }
+
+        $scriptUrl = url('assets/podlove-subscribe-button/javascripts/app.js');
+
+        return '<script>window.' . $variable . '=' . $json . ';</script>'
+            . Html::tag('span', [
+                Html::tag('span', '', [
+                    'class' => 'js-podlove-subscribe-config',
+                    'src' => $scriptUrl,
+                    'data-language' => 'de',
+                    'data-size' => 'medium',
+                    'data-format' => 'square',
+                    'data-style' => 'filled',
+                    'data-color' => '#5b63ff',
+                    'data-json-data' => $variable,
+                ]),
+                Html::tag('noscript', Html::a($feedUrl, 'Abonnieren', [
+                    'class' => 'share-embed__subscribe-fallback',
+                    'target' => '_blank',
+                    'rel' => 'noopener noreferrer external nofollow',
+                ])),
+            ], ['class' => 'share-embed__subscribe-slot']);
     }
 
     private function videoOembed(string $url, string $platformId): ?array
@@ -2791,7 +3011,190 @@ HTACCESS;
             $data = array_merge($data, array_filter($candidate, static fn ($v) => is_string($v) && trim($v) !== ''));
         }
 
+        $streamData = $this->pocketCastsStreamData($html, $episodeSlug);
+        if ($streamData !== []) {
+            $data = array_merge($data, $streamData);
+        }
+
         return $data;
+    }
+
+    private function pocketCastsStreamData(string $html, string $episodeSlug = ''): array
+    {
+        $buffers = [];
+        if (preg_match_all('/streamController\.enqueue\("((?:[^"\\\\]|\\\\.)*)"\)/s', $html, $matches) >= 1) {
+            foreach (($matches[1] ?? []) as $blob) {
+                $decoded = json_decode('"' . $blob . '"', true);
+                if (!is_string($decoded) || trim($decoded) === '') {
+                    $decoded = stripcslashes((string)$blob);
+                }
+
+                if (is_string($decoded) && trim($decoded) !== '') {
+                    $buffers[] = html_entity_decode($decoded, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                }
+            }
+        }
+
+        if ($buffers === []) {
+            return [];
+        }
+
+        $buffer = implode("\n", $buffers);
+        $websiteUrl = $this->bestPocketCastsWebsiteUrlFromBuffer($buffer);
+        $podcastFeedUrl = $this->firstPocketCastsFeedUrlFromBuffer($buffer);
+
+        $episodeAudioUrl = '';
+        $episodeAudioMimeType = '';
+        if (
+            $episodeSlug !== '' &&
+            preg_match('/"' . preg_quote($episodeSlug, '/') . '","(https?:\/\/[^"]+)","file_type","([^"]+)"/u', $buffer, $m) === 1
+        ) {
+            $episodeAudioUrl = $this->normalizePocketCastsEpisodeAudioUrl((string)($m[1] ?? ''));
+            $episodeAudioMimeType = $this->cleanText((string)($m[2] ?? ''));
+        }
+
+        if ($episodeAudioUrl === '') {
+            $episodeAudioUrl = $this->firstPocketCastsEpisodeAudioUrlFromBuffer($buffer);
+        }
+
+        return array_filter([
+            'podcastWebsiteUrl' => $websiteUrl,
+            'podcastFeedUrl' => $podcastFeedUrl,
+            'episodeAudioUrl' => $episodeAudioUrl,
+            'episodeAudioMimeType' => $episodeAudioMimeType,
+        ], static fn ($value) => is_string($value) && trim($value) !== '');
+    }
+
+    private function bestPocketCastsWebsiteUrlFromBuffer(string $buffer): string
+    {
+        if ($buffer === '' || preg_match_all('/https?:\/\/[^"\s<]+/u', $buffer, $matches) < 1) {
+            return '';
+        }
+
+        $cleanedCandidates = array_map(
+            fn ($candidate) => $this->cleanPocketCastsBufferUrlCandidate((string)$candidate),
+            $matches[0] ?? []
+        );
+        $hostCounts = [];
+        foreach ($cleanedCandidates as $candidate) {
+            $url = $this->safeUrl($candidate);
+            if ($url === null) {
+                continue;
+            }
+
+            $host = strtolower((string)(parse_url($url, PHP_URL_HOST) ?? ''));
+            if ($host !== '') {
+                $hostCounts[$host] = ($hostCounts[$host] ?? 0) + 1;
+            }
+        }
+
+        $bestUrl = '';
+        $bestScore = PHP_INT_MIN;
+
+        foreach ($cleanedCandidates as $candidate) {
+            $url = $this->normalizePocketCastsWebsiteUrl($candidate);
+            if ($url === '') {
+                continue;
+            }
+
+            $host = strtolower((string)(parse_url($url, PHP_URL_HOST) ?? ''));
+            $hostCount = (int)($hostCounts[$host] ?? 0);
+            $score = $this->scorePocketCastsWebsiteUrl($url, $hostCount);
+
+            if ($score > $bestScore) {
+                $bestScore = $score;
+                $bestUrl = $url;
+            }
+        }
+
+        return $bestUrl;
+    }
+
+    private function firstPocketCastsFeedUrlFromBuffer(string $buffer): string
+    {
+        if ($buffer === '' || preg_match_all('/https?:\/\/[^"\s<]+/u', $buffer, $matches) < 1) {
+            return '';
+        }
+
+        foreach (($matches[0] ?? []) as $candidate) {
+            $url = $this->normalizePocketCastsFeedUrl($this->cleanPocketCastsBufferUrlCandidate((string)$candidate));
+            if ($url !== '') {
+                return $url;
+            }
+        }
+
+        return '';
+    }
+
+    private function firstPocketCastsEpisodeAudioUrlFromBuffer(string $buffer): string
+    {
+        if ($buffer === '' || preg_match_all('/https?:\/\/[^"\s<]+/u', $buffer, $matches) < 1) {
+            return '';
+        }
+
+        foreach (($matches[0] ?? []) as $candidate) {
+            $url = $this->normalizePocketCastsEpisodeAudioUrl($this->cleanPocketCastsBufferUrlCandidate((string)$candidate));
+            if ($url !== '') {
+                return $url;
+            }
+        }
+
+        return '';
+    }
+
+    private function cleanPocketCastsBufferUrlCandidate(string $candidate): string
+    {
+        $candidate = html_entity_decode($candidate, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $candidate = str_replace('\\/', '/', $candidate);
+        $candidate = preg_split('/\\\\/u', $candidate, 2)[0] ?? $candidate;
+        $candidate = preg_split('/[<>"\'\\]\\),]/u', $candidate, 2)[0] ?? $candidate;
+        $candidate = trim($candidate);
+        $candidate = trim($candidate, "\\\"',).]}");
+
+        return $candidate;
+    }
+
+    private function scorePocketCastsWebsiteUrl(string $url, int $hostCount = 0): int
+    {
+        $host = strtolower((string)(parse_url($url, PHP_URL_HOST) ?? ''));
+        $path = strtolower((string)(parse_url($url, PHP_URL_PATH) ?? ''));
+        $score = 0;
+
+        if ($path !== '' && $path !== '/') {
+            $score += 2;
+        } else {
+            $score -= 2;
+        }
+
+        if ($hostCount >= 3) {
+            $score += min(12, $hostCount * 2);
+        }
+
+        if (($path === '' || $path === '/') && $hostCount >= 3) {
+            $score += 4;
+        }
+
+        if (preg_match('~/(podcast|audio|show|shows|series|serie|thema|topic)~i', $path) === 1) {
+            $score += 5;
+        }
+
+        if (preg_match('~\.(?:css|js|png|jpe?g|webp|avif|svg|ico|woff2?)$~i', $path) === 1) {
+            $score -= 20;
+        }
+
+        if (preg_match('~/(support|donate|spende|impressum|imprint|newsletter|anmeldung|about|ueber|uber|privacy|datenschutz|terms|policy|kontakt|contact|faq)(?:/|$)~i', $path) === 1) {
+            $score -= 10;
+        }
+
+        if (preg_match('~/(podlove/(?:image|file)|media|files?|download)(?:/|$)~i', $path) === 1) {
+            $score -= 8;
+        }
+
+        if (str_contains($host, 'wonderl.ink')) {
+            $score -= 3;
+        }
+
+        return $score;
     }
 
     private function extractPocketCastsFieldsFromNode(mixed $node, ?string $episodeId = null, string $episodeSlug = ''): array
@@ -2799,6 +3202,14 @@ HTACCESS;
         if (!is_array($node)) {
             return [];
         }
+
+        $podcastWebsiteUrl = $this->normalizePocketCastsWebsiteUrl($this->findValueByKeys($node, [
+            'websiteUrl', 'website_url', 'siteUrl', 'site_url', 'webUrl', 'web_url', 'url',
+        ], null));
+        $podcastFeedUrl = $this->normalizePocketCastsFeedUrl($this->findValueByKeys($node, [
+            'feedUrl', 'feed_url', 'rssUrl', 'rss_url', 'xmlUrl', 'xml_url', 'podcastFeedUrl', 'podcast_feed_url',
+            'feedUri', 'feed_uri',
+        ], null));
 
         if ($episodeId !== null) {
             $episodeNode = $this->findPocketEpisodeNodeById($node, $episodeId);
@@ -2813,6 +3224,12 @@ HTACCESS;
                 $episodeNumber = $this->findValueByKeys($episodeNode, [
                     'numbering', 'episodeNumber', 'episode_number', 'episodeCode', 'episode_code', 'shortTitle', 'short_title', 'identifier', 'code',
                 ], null);
+                $episodeAudioUrl = $this->findValueByKeys($episodeNode, [
+                    'enclosureUrl', 'enclosure_url', 'audioUrl', 'audio_url', 'fileUrl', 'file_url', 'url',
+                ], null);
+                $episodeAudioMimeType = $this->findValueByKeys($episodeNode, [
+                    'fileType', 'file_type', 'mimeType', 'mime_type',
+                ], null);
                 $published = $this->findValueByKeys($episodeNode, [
                     'publishedAt', 'published_at', 'publishedDate', 'publishDate', 'releaseDate', 'release_date', 'datePublished', 'published', 'publishedTimestamp', 'published_timestamp', 'publishedAtMs', 'published_at_ms',
                 ], null);
@@ -2825,7 +3242,11 @@ HTACCESS;
                     'episodeImage' => $this->cleanText((string)$episodeImage) !== '' ? (string)$episodeImage : '',
                     'episodeTitle' => $this->cleanText((string)$episodeTitle),
                     'episodeNumber' => $this->cleanText((string)$episodeNumber),
+                    'episodeAudioUrl' => $this->normalizePocketCastsEpisodeAudioUrl($episodeAudioUrl),
+                    'episodeAudioMimeType' => $this->cleanText((string)$episodeAudioMimeType),
                     'podcastTitle' => $this->cleanText((string)$podcastTitle),
+                    'podcastWebsiteUrl' => $podcastWebsiteUrl,
+                    'podcastFeedUrl' => $podcastFeedUrl,
                     'published' => is_string($published) ? trim($published) : '',
                 ], static fn ($v) => is_string($v) && trim($v) !== '');
             }
@@ -2851,6 +3272,13 @@ HTACCESS;
             'numbering', 'episodeNumber', 'episode_number', 'episodeCode', 'episode_code', 'shortTitle', 'short_title', 'identifier', 'code',
         ], $episodeId);
 
+        $episodeAudioUrl = $this->findValueByKeys($node, [
+            'enclosureUrl', 'enclosure_url', 'audioUrl', 'audio_url', 'fileUrl', 'file_url',
+        ], $episodeId);
+        $episodeAudioMimeType = $this->findValueByKeys($node, [
+            'fileType', 'file_type', 'mimeType', 'mime_type',
+        ], $episodeId);
+
         $podcastTitle = $this->findValueByKeys($node, [
             'podcastTitle', 'podcast_title', 'showTitle', 'show_title', 'podcastName', 'podcast_name',
         ], null);
@@ -2863,9 +3291,535 @@ HTACCESS;
             'episodeImage' => $this->cleanText((string)$episodeImage) !== '' ? (string)$episodeImage : '',
             'episodeTitle' => $this->cleanText((string)$episodeTitle),
             'episodeNumber' => $this->cleanText((string)$episodeNumber),
+            'episodeAudioUrl' => $this->normalizePocketCastsEpisodeAudioUrl($episodeAudioUrl),
+            'episodeAudioMimeType' => $this->cleanText((string)$episodeAudioMimeType),
             'podcastTitle' => $this->cleanText((string)$podcastTitle),
+            'podcastWebsiteUrl' => $podcastWebsiteUrl,
+            'podcastFeedUrl' => $podcastFeedUrl,
             'published' => is_string($published) ? trim($published) : '',
         ], static fn ($v) => is_string($v) && trim($v) !== '');
+    }
+
+    private function normalizePocketCastsWebsiteUrl(?string $candidate): string
+    {
+        $url = $this->safeUrl((string)$candidate);
+        if ($url === null) {
+            return '';
+        }
+
+        if (
+            $this->isPocketCastsInternalUrl($url) ||
+            $this->isMetadataOrNamespaceUrl($url) ||
+            $this->looksLikeWebAssetUrl($url) ||
+            $this->isPocketCastsUrl($url) ||
+            $this->looksLikeAudioFileUrl($url) ||
+            $this->looksLikePodcastFeedUrl($url)
+        ) {
+            return '';
+        }
+
+        return $url;
+    }
+
+    private function normalizePocketCastsFeedUrl(?string $candidate): string
+    {
+        $url = $this->safeUrl((string)$candidate);
+        if (
+            $url === null ||
+            $this->isPocketCastsInternalUrl($url) ||
+            $this->looksLikeWebAssetUrl($url) ||
+            $this->looksLikePodcastFeedUrl($url) === false
+        ) {
+            return '';
+        }
+
+        return $url;
+    }
+
+    private function normalizePocketCastsEpisodeAudioUrl(?string $candidate): string
+    {
+        $url = $this->safeUrl((string)$candidate);
+        if ($url === null || $this->looksLikeAudioFileUrl($url) === false) {
+            return '';
+        }
+
+        return $url;
+    }
+
+    private function looksLikePodcastFeedUrl(string $url): bool
+    {
+        if (
+            $this->isPocketCastsInternalUrl($url) ||
+            $this->isMetadataOrNamespaceUrl($url) ||
+            $this->looksLikeWebAssetUrl($url) ||
+            $this->looksLikeAudioFileUrl($url)
+        ) {
+            return false;
+        }
+
+        $path = strtolower((string)(parse_url($url, PHP_URL_PATH) ?? ''));
+        $query = strtolower((string)(parse_url($url, PHP_URL_QUERY) ?? ''));
+        $combined = trim($path . '?' . $query, '?');
+
+        if ($combined === '') {
+            return false;
+        }
+
+        if (preg_match('~(?:^|[/?._-])(rss|feed|atom)(?:[/?._-]|$)~i', $combined) === 1) {
+            return true;
+        }
+
+        return preg_match('~\.(rss|xml|atom)$~i', $path) === 1;
+    }
+
+    private function isPocketCastsInternalUrl(string $url): bool
+    {
+        $host = strtolower((string)(parse_url($url, PHP_URL_HOST) ?? ''));
+        $path = strtolower((string)(parse_url($url, PHP_URL_PATH) ?? ''));
+
+        if ($host === '') {
+            return false;
+        }
+
+        if (
+            $host === 'pca.st' ||
+            str_ends_with($host, '.pca.st') ||
+            $host === 'static.pocketcasts.com' ||
+            str_ends_with($host, '.pocketcasts.com')
+        ) {
+            return true;
+        }
+
+        return str_contains($path, '/oembed');
+    }
+
+    private function isMetadataOrNamespaceUrl(string $url): bool
+    {
+        $host = strtolower((string)(parse_url($url, PHP_URL_HOST) ?? ''));
+        if ($host === '') {
+            return false;
+        }
+
+        return in_array($host, [
+            'w3.org',
+            'www.w3.org',
+            'schema.org',
+            'www.schema.org',
+            'ogp.me',
+            'xmlns.com',
+            'purl.org',
+            'search.yahoo.com',
+        ], true);
+    }
+
+    private function looksLikeWebAssetUrl(string $url): bool
+    {
+        $path = strtolower((string)(parse_url($url, PHP_URL_PATH) ?? ''));
+        if ($path === '') {
+            return false;
+        }
+
+        return preg_match('~\.(?:js|css|json|map|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|eot|pdf)$~i', $path) === 1;
+    }
+
+    private function looksLikeAudioFileUrl(string $url): bool
+    {
+        $path = strtolower((string)(parse_url($url, PHP_URL_PATH) ?? ''));
+        if ($path === '') {
+            return false;
+        }
+
+        return preg_match('~\.(mp3|m4a|aac|ogg|oga|opus|wav)$~i', $path) === 1;
+    }
+
+    private function discoverPodcastFeedUrl(string $websiteUrl): ?string
+    {
+        $websiteUrl = $this->safeUrl($websiteUrl);
+        if ($websiteUrl === null) {
+            return null;
+        }
+
+        if ($this->looksLikePodcastFeedUrl($websiteUrl)) {
+            return $websiteUrl;
+        }
+
+        try {
+            $response = Remote::get($websiteUrl, [
+                'timeout' => 12,
+                'agent' => 'hnzio share embed cache',
+                'headers' => [
+                    'Accept' => 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.1',
+                ],
+            ]);
+        } catch (Throwable) {
+            return null;
+        }
+
+        if (($response->code() ?? 0) < 200 || ($response->code() ?? 0) >= 400) {
+            return null;
+        }
+
+        $html = (string)$response->content();
+        if ($html === '') {
+            return null;
+        }
+
+        $doc = new DOMDocument('1.0', 'UTF-8');
+        libxml_use_internal_errors(true);
+        $doc->loadHTML('<?xml encoding="utf-8" ?>' . $html);
+        libxml_clear_errors();
+        $xpath = new DOMXPath($doc);
+
+        $bestAlternateFeed = null;
+        $bestAlternateScore = PHP_INT_MIN;
+        foreach ($xpath->query('//link[@href]') ?: [] as $link) {
+            if (!$link instanceof DOMElement) {
+                continue;
+            }
+
+            $rel = strtolower(trim((string)$link->getAttribute('rel')));
+            $type = strtolower(trim((string)$link->getAttribute('type')));
+            $title = strtolower(trim((string)$link->getAttribute('title')));
+            if (str_contains($rel, 'alternate') === false) {
+                continue;
+            }
+            if (
+                str_contains($type, 'rss') === false &&
+                str_contains($type, 'atom') === false &&
+                str_contains($type, 'xml') === false &&
+                str_contains($title, 'rss') === false &&
+                str_contains($title, 'podcast') === false &&
+                str_contains($title, 'feed') === false
+            ) {
+                continue;
+            }
+
+            $candidate = $this->absoluteUrl((string)$link->getAttribute('href'), $websiteUrl);
+            if ($candidate === null) {
+                continue;
+            }
+
+            if ($this->looksLikePodcastFeedUrl($candidate)) {
+                return $candidate;
+            }
+
+            $score = 0;
+            if (str_contains($title, 'podcast')) {
+                $score += 6;
+            }
+            if (str_contains($title, 'audio')) {
+                $score += 3;
+            }
+            if (str_contains($title, 'mp3')) {
+                $score += 2;
+            }
+            if (str_contains($title, 'feed')) {
+                $score += 1;
+            }
+            if (str_contains($type, 'rss') || str_contains($type, 'atom') || str_contains($type, 'xml')) {
+                $score += 2;
+            }
+            if (str_contains($title, 'comment') || str_contains($title, 'kommentar')) {
+                $score -= 10;
+            }
+
+            if ($score > $bestAlternateScore) {
+                $bestAlternateScore = $score;
+                $bestAlternateFeed = $candidate;
+            }
+        }
+
+        if ($bestAlternateFeed !== null) {
+            return $bestAlternateFeed;
+        }
+
+        $regexes = [
+            '/"feedUrl"\s*:\s*"([^"]+)"/i',
+            '/"rssUrl"\s*:\s*"([^"]+)"/i',
+            '/"xmlUrl"\s*:\s*"([^"]+)"/i',
+            '/<a[^>]+href=["\']([^"\']+)["\'][^>]*>(?:[^<]{0,60})<\/a>/i',
+        ];
+
+        foreach ($regexes as $regex) {
+            if (preg_match_all($regex, $html, $matches) < 1) {
+                continue;
+            }
+
+            foreach (($matches[1] ?? []) as $match) {
+                $candidate = $this->absoluteUrl(html_entity_decode((string)$match, ENT_QUOTES | ENT_HTML5, 'UTF-8'), $websiteUrl);
+                if ($candidate !== null && $this->looksLikePodcastFeedUrl($candidate)) {
+                    return $candidate;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function fetchPocketCastsStructuredData(string $url): array
+    {
+        $url = $this->safeUrl($url);
+        if ($url === null || $this->isPocketCastsUrl($url) === false) {
+            return [];
+        }
+
+        $requestOptions = [
+            'timeout' => 12,
+            'agent' => 'hnzio share embed cache',
+            'headers' => [
+                'Accept' => 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.1',
+            ],
+        ];
+
+        try {
+            $response = Remote::get($url, $requestOptions);
+        } catch (Throwable) {
+            return [];
+        }
+
+        if (($response->code() ?? 0) >= 300 && ($response->code() ?? 0) < 400) {
+            $redirectUrl = $this->redirectLocationFromResponse($response, $url);
+            if ($redirectUrl !== null && $this->isPocketCastsUrl($redirectUrl)) {
+                $url = $redirectUrl;
+
+                try {
+                    $response = Remote::get($url, $requestOptions);
+                } catch (Throwable) {
+                    return [];
+                }
+            }
+        }
+
+        if (($response->code() ?? 0) < 200 || ($response->code() ?? 0) >= 400) {
+            return [];
+        }
+
+        $html = (string)$response->content();
+        if ($html === '') {
+            return [];
+        }
+
+        $data = $this->pocketCastsStructuredData($html, $url);
+        $bufferWebsiteUrl = $this->bestPocketCastsWebsiteUrlFromBuffer($html);
+        $currentWebsiteUrl = $this->safeUrl((string)($data['podcastWebsiteUrl'] ?? ''));
+        if (
+            $bufferWebsiteUrl !== '' &&
+            (
+                $currentWebsiteUrl === null ||
+                $this->scorePocketCastsWebsiteUrl($bufferWebsiteUrl) > $this->scorePocketCastsWebsiteUrl($currentWebsiteUrl)
+            )
+        ) {
+            $data['podcastWebsiteUrl'] = $bufferWebsiteUrl;
+        }
+        if (trim((string)($data['podcastFeedUrl'] ?? '')) === '') {
+            $data['podcastFeedUrl'] = $this->firstPocketCastsFeedUrlFromBuffer($html);
+        }
+
+        $episodeAudioUrl = trim((string)($data['episodeAudioUrl'] ?? ''));
+        if ($episodeAudioUrl === '') {
+            $episodeAudioUrl = $this->firstPocketCastsEpisodeAudioUrlFromBuffer($html);
+            if ($episodeAudioUrl !== '') {
+                $data['episodeAudioUrl'] = $episodeAudioUrl;
+            }
+        }
+
+        $websiteUrl = $this->safeUrl((string)($data['podcastWebsiteUrl'] ?? ''));
+        if (trim((string)($data['podcastFeedUrl'] ?? '')) === '' && $websiteUrl !== null) {
+            $data['podcastFeedUrl'] = $this->discoverPodcastFeedUrl($websiteUrl) ?? '';
+        }
+        if (trim((string)($data['podcastFeedUrl'] ?? '')) === '') {
+            $data['podcastFeedUrl'] = $this->inferPocketCastsFeedUrlFromEpisodeAudio(
+                $episodeAudioUrl,
+                (string)($data['podcastTitle'] ?? '')
+            ) ?? '';
+        }
+        if (trim((string)($data['podcastFeedUrl'] ?? '')) === '') {
+            $data['podcastFeedUrl'] = $this->inferPocketCastsFeedUrlFromKnownShow(
+                (string)($data['podcastTitle'] ?? ''),
+                (string)($data['podcastWebsiteUrl'] ?? ''),
+                $url
+            ) ?? '';
+        }
+
+        return array_filter($data, static fn ($value) => is_string($value) && trim($value) !== '');
+    }
+
+    private function redirectLocationFromResponse(object $response, string $baseUrl): ?string
+    {
+        $location = '';
+        foreach ((array)$response->headers() as $name => $value) {
+            if (strtolower((string)$name) === 'location') {
+                $location = trim((string)$value);
+                break;
+            }
+        }
+
+        if ($location === '') {
+            return null;
+        }
+
+        return $this->absoluteUrl($location, $baseUrl) ?? $this->safeUrl($location);
+    }
+
+    private function inferPocketCastsFeedUrlFromEpisodeAudio(string $episodeAudioUrl, string $podcastTitle): ?string
+    {
+        $episodeAudioUrl = $this->safeUrl($episodeAudioUrl);
+        if ($episodeAudioUrl === null) {
+            return null;
+        }
+
+        $host = strtolower((string)(parse_url($episodeAudioUrl, PHP_URL_HOST) ?? ''));
+        $path = strtolower((string)(parse_url($episodeAudioUrl, PHP_URL_PATH) ?? ''));
+        $candidates = [];
+
+        if ($host === 'sphinx.acast.com' || str_ends_with($host, '.acast.com')) {
+            if (preg_match('~/s/([^/]+)/~i', $path, $match) === 1) {
+                $showId = trim((string)($match[1] ?? ''));
+                if ($showId !== '') {
+                    $candidates[] = 'https://feeds.acast.com/public/shows/' . rawurlencode($showId);
+                }
+            }
+        }
+
+        if ($host === 'audio.podigee-cdn.net' || str_ends_with($host, '.podigee-cdn.net')) {
+            $slug = Str::slug(strtr($podcastTitle, [
+                'Ä' => 'Ae',
+                'Ö' => 'Oe',
+                'Ü' => 'Ue',
+                'ä' => 'ae',
+                'ö' => 'oe',
+                'ü' => 'ue',
+                'ß' => 'ss',
+            ]));
+            if ($slug !== '') {
+                $candidates[] = 'https://' . $slug . '.podigee.io/feed/mp3';
+            }
+        }
+
+        foreach ($candidates as $candidate) {
+            $validated = $this->validatePodcastFeedUrl($candidate);
+            if ($validated !== null) {
+                return $validated;
+            }
+        }
+
+        return null;
+    }
+
+    private function inferPocketCastsFeedUrlFromKnownShow(string $podcastTitle, string $podcastWebsiteUrl = '', string $canonicalUrl = ''): ?string
+    {
+        $titleSlug = Str::slug(strtr($podcastTitle, [
+            'Ä' => 'Ae',
+            'Ö' => 'Oe',
+            'Ü' => 'Ue',
+            'ä' => 'ae',
+            'ö' => 'oe',
+            'ü' => 'ue',
+            'ß' => 'ss',
+        ]));
+        $websiteHost = strtolower((string)(parse_url((string)$this->safeUrl($podcastWebsiteUrl), PHP_URL_HOST) ?? ''));
+        $canonicalPath = strtolower((string)(parse_url((string)$this->safeUrl($canonicalUrl), PHP_URL_PATH) ?? ''));
+        $candidates = [];
+
+        if ($titleSlug === 'das-podcast-ufo' || str_contains($canonicalPath, '/das-podcast-ufo/')) {
+            $candidates[] = 'https://feeds.acast.com/public/shows/podcast-ufo';
+        }
+
+        if (
+            $titleSlug === 'tischgespraeche-der-round-table-podcast' ||
+            $websiteHost === 'round-table.de' ||
+            $websiteHost === 'www.round-table.de'
+        ) {
+            $candidates[] = 'https://tischgespraeche-der-round-table-podcast.podigee.io/feed/mp3';
+        }
+
+        foreach ($candidates as $candidate) {
+            $validated = $this->validatePodcastFeedUrl($candidate);
+            if ($validated !== null) {
+                return $validated;
+            }
+        }
+
+        return null;
+    }
+
+    private function validatePodcastFeedUrl(?string $candidate): ?string
+    {
+        $url = $this->safeUrl((string)$candidate);
+        if ($url === null || $this->looksLikePodcastFeedUrl($url) === false) {
+            return null;
+        }
+
+        try {
+            $response = Remote::get($url, [
+                'timeout' => 10,
+                'agent' => 'hnzio share embed cache',
+                'headers' => [
+                    'Accept' => 'application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.1',
+                ],
+            ]);
+        } catch (Throwable) {
+            return null;
+        }
+
+        $status = (int)($response->code() ?? 0);
+        if ($status < 200 || $status >= 400) {
+            return null;
+        }
+
+        $headers = array_change_key_case((array)$response->headers(), CASE_LOWER);
+        $contentType = strtolower(trim((string)($headers['content-type'] ?? '')));
+        $body = ltrim((string)$response->content());
+
+        if (
+            str_contains($contentType, 'xml') ||
+            str_contains($contentType, 'rss') ||
+            str_starts_with($body, '<?xml') ||
+            str_contains(substr($body, 0, 512), '<rss') ||
+            str_contains(substr($body, 0, 512), '<feed')
+        ) {
+            return $url;
+        }
+
+        return null;
+    }
+
+    private function inferPodcastFeedFormat(string $mimeType = '', string $enclosureUrl = '', string $feedUrl = ''): string
+    {
+        $mimeType = strtolower(trim($mimeType));
+        if (str_contains($mimeType, 'mpeg')) {
+            return 'mp3';
+        }
+        if (str_contains($mimeType, 'aac') || str_contains($mimeType, 'mp4') || str_contains($mimeType, 'm4a')) {
+            return 'aac';
+        }
+        if (str_contains($mimeType, 'opus')) {
+            return 'opus';
+        }
+        if (str_contains($mimeType, 'ogg')) {
+            return 'ogg';
+        }
+
+        foreach ([$enclosureUrl, $feedUrl] as $url) {
+            $path = strtolower((string)(parse_url($url, PHP_URL_PATH) ?? ''));
+            if ($path === '') {
+                continue;
+            }
+            if (preg_match('~\.mp3$~', $path) === 1 || str_contains($path, '/mp3')) {
+                return 'mp3';
+            }
+            if (preg_match('~\.(m4a|aac)$~', $path) === 1 || str_contains($path, '/aac') || str_contains($path, '/mp4')) {
+                return 'aac';
+            }
+            if (preg_match('~\.opus$~', $path) === 1 || str_contains($path, '/opus')) {
+                return 'opus';
+            }
+            if (preg_match('~\.(ogg|oga)$~', $path) === 1 || str_contains($path, '/ogg')) {
+                return 'ogg';
+            }
+        }
+
+        return 'mp3';
     }
 
     private function isEpisodeSpecificImageUrl(string $url, ?string $episodeId, string $episodeSlug): bool
