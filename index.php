@@ -706,11 +706,27 @@ final class HnzioShareEmbedService
                 $webParts[] = $titleHtml;
             }
             if ($description !== '' && $isPocketCasts === false) {
-                $webParts[] = Html::tag(
-                    'blockquote',
-                    [$this->renderTextWithLinks($description)],
-                    ['class' => 'share-embed__description share-embed__description--quote e-content']
-                );
+                $webParts[] = Html::div([
+                    Html::tag(
+                        'blockquote',
+                        [$this->renderTextWithLinks($description)],
+                        [
+                            'class' => 'share-embed__description share-embed__description--quote share-embed__description--collapsible e-content',
+                            'data-watch-summary' => '',
+                            'data-collapsed' => 'true',
+                        ]
+                    ),
+                    Html::a(
+                        '#',
+                        'Weiterlesen',
+                        [
+                            'class' => 'share-embed__description-toggle',
+                            'data-watch-summary-toggle' => '',
+                            'aria-expanded' => 'false',
+                            'hidden' => 'hidden',
+                        ]
+                    ),
+                ], ['class' => 'share-embed__description-shell', 'data-watch-summary-shell' => '']);
             }
 
             if ($isPocketCasts && $audioDuration !== '') {
